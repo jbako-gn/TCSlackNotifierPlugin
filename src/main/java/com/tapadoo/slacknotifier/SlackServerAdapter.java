@@ -33,17 +33,13 @@ public class SlackServerAdapter extends BuildServerAdapter {
     private final SBuildServer buildServer;
     private final SlackConfigProcessor slackConfig;
     private final ProjectSettingsManager projectSettingsManager;
-    private final ProjectManager projectManager;
+
     private Gson gson;
 
     public SlackServerAdapter(SBuildServer sBuildServer, ProjectManager projectManager, ProjectSettingsManager projectSettingsManager, SlackConfigProcessor configProcessor) {
-
-        this.projectManager = projectManager;
         this.projectSettingsManager = projectSettingsManager;
         this.buildServer = sBuildServer;
         this.slackConfig = configProcessor;
-
-
     }
 
     public void init() {
@@ -67,9 +63,10 @@ public class SlackServerAdapter extends BuildServerAdapter {
         if (!build.isPersonal() && (
                 (!projectSettings.postStartedSet() && slackConfig.postStarted()) ||
                         (projectSettings.postStartedSet() && projectSettings.postStartedEnabled())
-            ))
-        {
-            postStartedBuild(build);
+        )) {
+            String message = String.format("Project '%s' build started.", build.getFullName());
+
+            postToSlack(build, message, true);
         }
     }
 
@@ -79,80 +76,67 @@ public class SlackServerAdapter extends BuildServerAdapter {
 
         if (build.getBuildStatus().isSuccessful()) {
             processSuccessfulBuild(build);
-        } else if (build.getBuildStatus().isFailed()) {
+            return;
+        }
+
+        if (build.getBuildStatus().isFailed()) {
             processFailedBuild(build);
-        } else {
-            //TODO - modify in future if we care about other states
         }
     }
 
-    private void postStartedBuild(SRunningBuild build) {
-        //Could put other into here. Agents maybe?
-        String message = String.format("Project '%s' build started.", build.getFullName());
-        postToSlack(build, message, true);
-    }
-
     private void processFailedBuild(SRunningBuild build) {
+        if (build == null)
+            return;
+
+        if (build.getBranch() == null)
+            return;
+
         SlackProjectSettings projectSettings = getProjectSettings(build);
 
         if (!build.isPersonal() && (
                 (!projectSettings.postFailedSet() && slackConfig.postFailed()) ||
                         (projectSettings.postFailedSet() && projectSettings.postFailedEnabled())
-        )){
-            String message = "";
+        )) {
+            String message;
 
-            PeriodFormatter durationFormatter = new PeriodFormatterBuilder()
-                    .printZeroRarelyFirst()
-                    .appendHours()
-                    .appendSuffix(" hour", " hours")
-                    .appendSeparator(" ")
-                    .printZeroRarelyLast()
-                    .appendMinutes()
-                    .appendSuffix(" minute", " minutes")
-                    .appendSeparator(" and ")
-                    .appendSeconds()
-                    .appendSuffix(" second", " seconds")
-                    .toFormatter();
-
-            Duration buildDuration = new Duration(1000 * build.getDuration());
+            BuildDuration buildDuration = new BuildDuration(build);
 
             String buildFailedPermalink = this.slackConfig.getBuildFailedPermalink();
 
-            if (buildFailedPermalink != "")
-                message = String.format("Project '%s' (%s) build failed! ( %s )\n%s", build.getFullName(), build.getBranch().getDisplayName(), durationFormatter.print(buildDuration.toPeriod()), buildFailedPermalink);
+            if (buildFailedPermalink != null && buildFailedPermalink.length() > 0)
+                message = String.format("Project '%s' (%s) build failed! ( %s )\n%s",
+                        build.getFullName(),
+                        build.getBranch().getDisplayName(),
+                        buildDuration,
+                        buildFailedPermalink
+                );
             else
-                message = String.format("Project '%s' (%s) build failed! ( %s )", build.getFullName(), build.getBranch().getDisplayName(), durationFormatter.print(buildDuration.toPeriod()));
+                message = String.format("Project '%s' (%s) build failed! ( %s )",
+                        build.getFullName(),
+                        build.getBranch().getDisplayName(),
+                        buildDuration
+                );
 
             postToSlack(build, message, false);
         }
     }
 
     private void processSuccessfulBuild(SRunningBuild build) {
+        if (build == null)
+            return;
+
+        if (build.getBranch() == null)
+            return;
 
         SlackProjectSettings projectSettings = getProjectSettings(build);
 
         if (!build.isPersonal() && (
                 (!projectSettings.postSuccessfulSet() && slackConfig.postSuccessful()) ||
                         (projectSettings.postSuccessfulSet() && projectSettings.postSuccessfulEnabled())
-        )){
-            String message = "";
+        )) {
 
-            PeriodFormatter durationFormatter = new PeriodFormatterBuilder()
-                    .printZeroRarelyFirst()
-                    .appendHours()
-                    .appendSuffix(" hour", " hours")
-                    .appendSeparator(" ")
-                    .printZeroRarelyLast()
-                    .appendMinutes()
-                    .appendSuffix(" minute", " minutes")
-                    .appendSeparator(" and ")
-                    .appendSeconds()
-                    .appendSuffix(" second", " seconds")
-                    .toFormatter();
-
-            Duration buildDuration = new Duration(1000 * build.getDuration());
-
-            message = String.format("Project '%s' (%s) built successfully in %s.", build.getFullName(), build.getBranch().getDisplayName(), durationFormatter.print(buildDuration.toPeriod()));
+            BuildDuration buildDuration = new BuildDuration(build);
+            String message = String.format("Project '%s' (%s) built successfully in %s.", build.getFullName(), build.getBranch().getDisplayName(), buildDuration);
 
             postToSlack(build, message, true);
         }
@@ -170,11 +154,10 @@ public class SlackServerAdapter extends BuildServerAdapter {
 
             URL url = new URL(slackConfig.getPostUrl());
 
-            SlackProjectSettings projectSettings = (SlackProjectSettings) projectSettingsManager.getSettings(build.getProjectId(), "slackSettings");
+            SlackProjectSettings projectSettings = getProjectSettings(build);
 
-            if (!projectSettings.isEnabled()) {
+            if (!projectSettings.isEnabled())
                 return;
-            }
 
             String iconUrl = projectSettings.getLogoUrl();
 
@@ -187,7 +170,7 @@ public class SlackServerAdapter extends BuildServerAdapter {
 
             if (configuredChannel != null && configuredChannel.length() > 0) {
                 channel = configuredChannel;
-            } else if (projectSettings != null && projectSettings.getChannel() != null && projectSettings.getChannel().length() > 0) {
+            } else if (projectSettings.getChannel() != null && projectSettings.getChannel().length() > 0) {
                 channel = projectSettings.getChannel();
             }
 
@@ -213,7 +196,6 @@ public class SlackServerAdapter extends BuildServerAdapter {
             }
 
             String commitMsg = committersString.toString();
-
 
             JsonObject payloadObj = new JsonObject();
             payloadObj.addProperty("channel", channel);
@@ -302,15 +284,12 @@ public class SlackServerAdapter extends BuildServerAdapter {
 
             String payloadJson = getGson().toJson(payloadObj);
             String bodyContents = "payload=" + payloadJson;
+
             bos.write(bodyContents.getBytes("utf8"));
             bos.flush();
             bos.close();
 
-            int serverResponseCode = conn.getResponseCode();
-
             conn.disconnect();
-            conn = null;
-            url = null;
 
         } catch (MalformedURLException ex) {
 
